@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"k8s.io/apimachinery/pkg/fields"
 	"net"
 	"os"
 	"reflect"
@@ -48,6 +49,7 @@ import (
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/service"
 	"github.com/cilium/cilium/pkg/versioncheck"
+	"github.com/cilium/cilium/pkg/versioned"
 
 	go_version "github.com/hashicorp/go-version"
 	"github.com/sirupsen/logrus"
@@ -397,8 +399,11 @@ func (d *Daemon) EnableK8sWatcher(reSyncPeriod time.Duration) error {
 						return nil
 					}
 				},
+				nil,
 				&networkingv1.NetworkPolicy{},
+				k8s.Client(),
 			),
+			fields.Everything(),
 		)
 		blockWaitGroupToSyncResources(&d.k8sResourceSyncWaitGroup, policyController, "NetworkPolicy")
 		go policyController.Run(wait.NeverStop)
@@ -429,8 +434,11 @@ func (d *Daemon) EnableK8sWatcher(reSyncPeriod time.Duration) error {
 					return nil
 				}
 			},
+			nil,
 			&v1.Service{},
+			k8s.Client(),
 		),
+		fields.Everything(),
 	)
 
 	blockWaitGroupToSyncResources(&d.k8sResourceSyncWaitGroup, svcController, "Service")
@@ -460,8 +468,11 @@ func (d *Daemon) EnableK8sWatcher(reSyncPeriod time.Duration) error {
 					return nil
 				}
 			},
+			nil,
 			&v1.Endpoints{},
+			k8s.Client(),
 		),
+		fields.ParseSelectorOrDie("metadata.name!=kube-scheduler,metadata.name!=kube-controller-manager"),
 	)
 
 	blockWaitGroupToSyncResources(&d.k8sResourceSyncWaitGroup, endpointController, "Endpoint")
@@ -492,8 +503,11 @@ func (d *Daemon) EnableK8sWatcher(reSyncPeriod time.Duration) error {
 						return nil
 					}
 				},
+				nil,
 				&v1beta1.Ingress{},
+				k8s.Client(),
 			),
+			fields.Everything(),
 		)
 
 		blockWaitGroupToSyncResources(&d.k8sResourceSyncWaitGroup, ingressController, "Ingress")
@@ -531,7 +545,21 @@ func (d *Daemon) EnableK8sWatcher(reSyncPeriod time.Duration) error {
 					return nil
 				}
 			},
+			func(m versioned.Map) versioned.Map {
+				missing := versioned.Map{}
+				d.policy.Mutex.RLock()
+				for k, v := range m {
+					cnp := v.Data.(*cilium_v2.CiliumNetworkPolicy)
+					ruleLabels := cnp.GetRuleLabels()
+					if !d.policy.ContainsAllRLocked(ruleLabels) {
+						missing.Add(k, v)
+					}
+				}
+				d.policy.Mutex.RUnlock()
+				return missing
+			},
 			&cilium_v2.CiliumNetworkPolicy{},
+			ciliumNPClient,
 		)
 
 		ciliumV2Controller.AddEventHandler(rehf)
@@ -563,8 +591,11 @@ func (d *Daemon) EnableK8sWatcher(reSyncPeriod time.Duration) error {
 					return nil
 				}
 			},
+			nil,
 			&v1.Pod{},
+			k8s.Client(),
 		),
+		fields.Everything(),
 	)
 
 	go podsController.Run(wait.NeverStop)
@@ -593,8 +624,11 @@ func (d *Daemon) EnableK8sWatcher(reSyncPeriod time.Duration) error {
 					return nil
 				}
 			},
+			nil,
 			&v1.Node{},
+			k8s.Client(),
 		),
+		fields.Everything(),
 	)
 
 	go nodesController.Run(wait.NeverStop)
@@ -602,7 +636,7 @@ func (d *Daemon) EnableK8sWatcher(reSyncPeriod time.Duration) error {
 
 	namespaceController := k8s.ControllerFactory(
 		k8s.Client().CoreV1().RESTClient(),
-		&v1.Node{},
+		&v1.Namespace{},
 		reSyncPeriod,
 		k8s.ResourceEventHandlerFactory(
 			// AddFunc does not matter since the endpoint will fetch
@@ -617,8 +651,11 @@ func (d *Daemon) EnableK8sWatcher(reSyncPeriod time.Duration) error {
 					return nil
 				}
 			},
+			nil,
 			&v1.Namespace{},
+			k8s.Client(),
 		),
+		fields.Everything(),
 	)
 
 	go namespaceController.Run(wait.NeverStop)
